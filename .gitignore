@@ -1,0 +1,23 @@
+# Ambientes Virtuais (NUNCA envie a venv)
+venv/
+.venv/
+env/
+
+# Cache do Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Arquivos do VS Code
+.vscode/
+
+# Dados e Modelos (Opcional)
+# Se os arquivos .npy ou .pth forem muito grandes, 
+# é melhor não enviar para o Git comum.
+*.npy
+*.pth
+*.csv
+
+# Arquivos temporários de áudio
+fala_temp*.mp3
