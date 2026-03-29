@@ -18,8 +18,8 @@ O **LibrasLens** é uma solução de acessibilidade que utiliza Visão Computaci
 
 ## 📋 Pré-requisitos
 
-Para rodar este projeto em 2026, certifique-se de ter:
-* **Python 3.10 ou 3.11** (Versões recomendadas para estabilidade).
+Para rodar este projeto, certifique-se de ter:
+* **Python 3.11** (Versão estritamente recomendada para garantir a estabilidade do MediaPipe e OpenCV).
 * **Webcam** funcional.
 * **Git** instalado para controle de versão.
 
@@ -27,25 +27,22 @@ Para rodar este projeto em 2026, certifique-se de ter:
 
 ## 🛠️ Configuração do Ambiente
 
-É altamente recomendado o uso de um ambiente virtual (`venv`) para isolar as dependências. No terminal, siga a ordem:
+É altamente recomendado o uso de um ambiente virtual (`venv`) para isolar as dependências e evitar conflitos de versão (como erros de incompatibilidade do NumPy 2.x). No terminal do projeto, siga a ordem:
 
 ### 1. Criar e Ativar a Venv
 ```powershell
-# Criar o ambiente
+# Criar o ambiente virtual
 python -m venv venv
 
 # Ativar no Windows (PowerShell)
 .\venv\Scripts\activate
-
 ```
 
 ### 2. Instalar Dependências
-
-As versões abaixo garantem a compatibilidade entre as bibliotecas:
+Com a venv ativada (você verá `(venv)` no início da linha do terminal), instale todas as bibliotecas a partir do arquivo de requisitos. Isso instalará as versões exatas e blindadas para o projeto:
 
 ```powershell
-pip install opencv-python==4.8.0.76 mediapipe==0.10.0 pandas numpy==1.24.3 scikit-learn torch streamlit gTTS pygame
-
+pip install -r requirements.txt
 ```
 
 ---
@@ -73,11 +70,10 @@ O desenvolvimento deste projeto foi documentado em um artigo científico que det
 
 ## 🚀 Como Rodar o Aplicativo Final
 
-Após realizar a coleta e o treinamento (ou possuir os arquivos `.pth` e `.npy`), inicie a interface:
+Após realizar a coleta e o treinamento (ou possuir os arquivos `.pth` e `.npy`), inicie a interface garantindo que sua `venv` está ativada:
 
 ```powershell
 streamlit run app_libras.py
-
 ```
 
 ---
@@ -94,6 +90,7 @@ streamlit run app_libras.py
 
 * **Interface:** Otimizada com `@st.cache_resource` para evitar sobrecarga de memória RAM.
 * **Segurança:** Scripts estruturados com blocos `try-except` para evitar interrupções caso a mão saia do campo de visão da câmera.
+* **Estabilidade Core:** Importações do MediaPipe ajustadas para contornar falhas de inicialização nativas no Windows (`mediapipe.python.solutions`).
 
 ---
 
@@ -104,3 +101,7 @@ Gostaríamos de expressar nossa profunda gratidão ao nosso orientador e profess
 ---
 
 Desenvolvido como projeto de Inteligência Artificial Aplicada — FHO 2026.
+
+***
+
+Tudo pronto! O que acha de fazermos aquele teste final com o `python 1_coleta_dados.py` para comemorarmos que a câmera finalmente está funcionando sem erros?
