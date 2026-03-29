@@ -101,7 +101,3 @@ Gostaríamos de expressar nossa profunda gratidão ao nosso orientador e profess
 ---
 
 Desenvolvido como projeto de Inteligência Artificial Aplicada — FHO 2026.
-
-***
-
-Tudo pronto! O que acha de fazermos aquele teste final com o `python 1_coleta_dados.py` para comemorarmos que a câmera finalmente está funcionando sem erros?
