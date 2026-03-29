@@ -1,9 +1,22 @@
-opencv-python
-mediapipe
-pandas
-numpy
-scikit-learn
+# --- NÚCLEO DE VISÃO COMPUTACIONAL (VERSÕES TRAVADAS) ---
+# Estas versões evitam o erro do MediaPipe e a incompatibilidade do NumPy 2.x
+numpy==1.26.4
+opencv-python==4.9.0.80
+mediapipe==0.10.9
+
+# --- MACHINE LEARNING E REDES NEURAIS ---
 torch
+scikit-learn
+pandas
+
+# --- INTERFACE WEB ---
 streamlit
+
+# --- ÁUDIO E VOZ ---
 gTTS
 pygame
+
+# --- OUTROS UTILITÁRIOS ---
+# (Opcional: instalados automaticamente pelas de cima, mas bom garantir)
+joblib
+matplotlib
