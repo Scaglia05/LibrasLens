@@ -2,225 +2,157 @@ import streamlit as st
 import cv2
 import numpy as np
 import torch
-import time
-import os
 import torch.nn as nn
-from collections import deque, Counter
-from gtts import gTTS
-import pygame
-from threading import Thread
-
-# --- IMPORTAÇÃO RESILIENTE DO CONTEXTO DO STREAMLIT ---
-try:
-    from streamlit.runtime.scriptrunner import add_script_run_context
-except ImportError:
-    try:
-        from streamlit.runtime.scriptrunner.script_run_context import add_script_run_context
-    except ImportError:
-        try:
-            from streamlit.runtime.scriptrunner import get_script_run_context as add_script_run_context
-        except ImportError:
-            def add_script_run_context(t): return t
-
-# --- IMPORTAÇÃO MEDIAPIPE ---
+import torch.nn.functional as F
 import mediapipe as mp
-import mediapipe.python.solutions.hands as mp_hands
-import mediapipe.python.solutions.drawing_utils as mp_drawing
+import time
+from collections import deque
 
-# --- INICIALIZAÇÃO DE ESTADO ---
-if 'frase' not in st.session_state:
-    st.session_state.frase = ""
-
-# --- CONFIGURAÇÕES DO MODELO ---
-HIDDEN_SIZE = 128
-NUM_LAYERS = 2
-SEQ_LENGTH = 15
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-class ModeloLibrasLSTM(nn.Module):
+# --- 1. ARQUITETURA HÍBRIDA (Deve ser 100% igual ao script de treino) ---
+class ModeloHibridoLibras(nn.Module):
     def __init__(self, num_classes):
-        super(ModeloLibrasLSTM, self).__init__()
-        self.lstm = nn.LSTM(input_size=63, hidden_size=HIDDEN_SIZE,
-                            num_layers=NUM_LAYERS, batch_first=True, dropout=0.3)
-        self.bn = nn.BatchNorm1d(HIDDEN_SIZE)
-        self.fc = nn.Sequential(
-            nn.Linear(HIDDEN_SIZE, 64),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(64, num_classes)
+        super(ModeloHibridoLibras, self).__init__()
+        # Ramo CNN (Analisa a imagem capturada)
+        self.cnn = nn.Sequential(
+            nn.Conv2d(1, 32, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2),
+            nn.Conv2d(32, 64, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2),
+            nn.Flatten(),
+            nn.Linear(64 * 16 * 16, 256), nn.ReLU(), nn.Dropout(0.3)
+        )
+        # Ramo Bi-LSTM (Analisa o movimento/pontos)
+        # AJUSTE: Se der erro de "l2", use num_layers=3. Se der erro de chaves faltando, use 2.
+        self.lstm = nn.LSTM(63, 256, num_layers=2, batch_first=True, bidirectional=True)
+        self.bn_lstm = nn.BatchNorm1d(512)
+        
+        # Cabeça de Classificação
+        self.classifier = nn.Sequential(
+            nn.Linear(256 + 512, 128), nn.ReLU(),
+            nn.Linear(128, num_classes)
         )
 
-    def forward(self, x):
-        out, _ = self.lstm(x)
-        out = out[:, -1, :]
-        out = self.bn(out)
-        return self.fc(out)
+    def forward(self, img, pts):
+        x_img = self.cnn(img)
+        out_lstm, _ = self.lstm(pts)
+        x_pts = torch.mean(out_lstm, dim=1)
+        x_pts = self.bn_lstm(x_pts)
+        combined = torch.cat((x_img, x_pts), dim=1)
+        return self.classifier(combined)
 
-def normalizar_frame(coords_brutas):
+# --- 2. FUNÇÕES AUXILIARES ---
+def normalizar_pontos(coords_brutas):
     coords = np.array(coords_brutas).reshape(21, 3)
     pulso = coords[0]
-    ponto_ref = coords[9] 
-    dist_palma = np.linalg.norm(ponto_ref - pulso)
-    if dist_palma == 0: dist_palma = 1.0
-    norm_coords = (coords - pulso) / dist_palma
-    return norm_coords.flatten()
+    # Normalização simples por distância da palma
+    dist_ref = np.linalg.norm(coords[9] - pulso)
+    if dist_ref == 0: dist_ref = 1.0
+    return ((coords - pulso) / dist_ref).flatten()
 
 @st.cache_resource
 def carregar_recursos():
-    classes = np.load('classes_encoder.npy', allow_pickle=True)
-    modelo = ModeloLibrasLSTM(len(classes))
-    modelo.load_state_dict(torch.load('modelo_libras_lstm.pth', map_location=DEVICE))
-    modelo.to(DEVICE)
+    classes = np.load('classes.npy', allow_pickle=True)
+    modelo = ModeloHibridoLibras(len(classes))
+    # Carrega os pesos salvos
+    modelo.load_state_dict(torch.load('modelo_hibrido_final.pth', map_location='cpu'))
     modelo.eval()
     return modelo, classes
 
-def falar_texto(texto):
-    if not texto.strip(): return
-    try:
-        tts = gTTS(text=texto, lang='pt')
-        filename = "fala_temp.mp3"
-        tts.save(filename)
-        pygame.mixer.init()
-        pygame.mixer.music.load(filename)
-        pygame.mixer.music.play()
-        while pygame.mixer.music.get_busy(): continue
-        pygame.mixer.music.unload()
-        pygame.mixer.quit()
-        if os.path.exists(filename): os.remove(filename)
-    except: pass
+# --- 3. INTERFACE STREAMLIT ---
+st.set_page_config(page_title="Libras Vision 2026", layout="wide")
+st.title("🤟 Tradutor de Libras Híbrido (CNN + Bi-LSTM)")
 
-# --- INTERFACE ---
-st.set_page_config(page_title="IA LIBRAS 2026", layout="wide")
-st.title("🤟 Tradutor LIBRAS Inteligente v2")
+if 'frase' not in st.session_state:
+    st.session_state.frase = ""
 
 col_cam, col_info = st.columns([2, 1])
-
-# O Toggle serve como o interruptor principal
-run = col_cam.toggle('Ligar Câmera', value=False)
+run = col_cam.toggle('LIGAR TRADUTOR', value=False)
 FRAME_WINDOW = col_cam.image([])
 
 with col_info:
-    st.subheader("Painel de Controle")
-    display_letra = st.empty()
-    display_frase = st.empty()
-    
-    st.write("---")
-    st.write("**Status do Áudio Automático**")
-    timer_progresso = st.progress(0)
-    timer_texto = st.empty()
-    
-    if st.button("Limpar Tudo (Reset)"):
+    st.subheader("📝 Tradução em Tempo Real")
+    area_frase = st.empty()
+    st.markdown("---")
+    st.write("**Instruções:**")
+    st.write("1. Coloque sua mão dentro do quadrado verde.")
+    st.write("2. Mantenha o sinal por 1 segundo para confirmar a letra.")
+    if st.button("Limpar Frase"):
         st.session_state.frase = ""
         st.rerun()
 
-# --- LOOP PRINCIPAL ---
+# --- 4. ENGINE DE EXECUÇÃO ---
 if run:
     modelo, classes = carregar_recursos()
-    # Usamos o context manager 'with' para garantir que o MediaPipe feche corretamente
-    with mp_hands.Hands(max_num_hands=1, min_detection_confidence=0.8, min_tracking_confidence=0.8) as hands:
-        cap = cv2.VideoCapture(0)
-        
-        buffer_coords = deque(maxlen=SEQ_LENGTH)
-        historico_predicoes = deque(maxlen=20)
-        ultimo_registro_tempo = time.time()
-        tempo_parado = time.time()
-
-        while run:
-            success, frame = cap.read()
-            if not success:
-                st.error("Falha ao acessar a câmera.")
-                break
-
-            frame = cv2.flip(frame, 1)
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            result = hands.process(rgb)
-
-            if result.multi_hand_landmarks:
-                tempo_parado = time.time() 
-                for hand_landmarks in result.multi_hand_landmarks:
-                    raw_coords = []
-                    for lm in hand_landmarks.landmark:
-                        raw_coords.extend([lm.x, lm.y, lm.z])
-                    
-                    buffer_coords.append(normalizar_frame(raw_coords))
-                    frequencia = 0
-                    letra_final = ""
-
-                    if len(buffer_coords) == SEQ_LENGTH:
-                        input_tensor = torch.tensor([list(buffer_coords)], dtype=torch.float32).to(DEVICE)
-                        with torch.no_grad():
-                            output = modelo(input_tensor)
-                            pred = torch.argmax(output).item()
-                            historico_predicoes.append(classes[pred])
-
-                        contagem = Counter(historico_predicoes).most_common(1)
-                        letra_final = contagem[0][0]
-                        frequencia = contagem[0][1]
-
-                    cor_ponto = (255, 255, 255)
-                    cor_conexao = (200, 200, 200)
-
-                    if frequencia > 8:
-                        cor_ponto = (0, 255, 255)
-                        cor_conexao = (0, 255, 255)
-                        display_letra.warning(f"Estabilizando: {letra_final}")
-                    
-                    if frequencia > 15:
-                        cor_ponto = (0, 255, 0)
-                        cor_conexao = (0, 255, 0)
-                        display_letra.info(f"Confirmado: **{letra_final}**")
-
-                        if time.time() - ultimo_registro_tempo > 2.5:
-                            if letra_final == 'ESPACO': st.session_state.frase += " "
-                            elif letra_final == 'APAGAR': st.session_state.frase = st.session_state.frase[:-1]
-                            else: st.session_state.frase += letra_final
-                            
-                            buffer_coords.clear()
-                            historico_predicoes.clear()
-                            ultimo_registro_tempo = time.time()
-
-                    mp_drawing.draw_landmarks(
-                        frame, hand_landmarks, mp_hands.HAND_CONNECTIONS,
-                        mp_drawing.DrawingSpec(color=cor_ponto, thickness=2, circle_radius=2),
-                        mp_drawing.DrawingSpec(color=cor_conexao, thickness=2, circle_radius=2)
-                    )
-            else:
-                display_letra.error("Mão fora de alcance")
-
-            tempo_sem_sinal = time.time() - tempo_parado
-            if st.session_state.frase.strip():
-                progresso = min(1.0, tempo_sem_sinal / 10)
-                timer_progresso.progress(progresso)
-                tempo_restante = max(0, 10 - int(tempo_sem_sinal))
-                timer_texto.write(f"🎤 Áudio em: {tempo_restante}s")
-
-                if tempo_sem_sinal > 10.0:
-                    texto_fala = st.session_state.frase
-                    st.session_state.frase = ""
-                    t = Thread(target=falar_texto, args=(texto_fala,))
-                    add_script_run_context(t)
-                    t.start()
-                    tempo_parado = time.time()
-            else:
-                timer_progresso.progress(0)
-                timer_texto.write("Aguardando sinal para iniciar...")
-
-            display_frase.success(f"**Frase Atual:** {st.session_state.frase}")
-            FRAME_WINDOW.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-            
-            # --- MELHORIA: VERIFICAÇÃO DE PARADA ---
-            # Se o usuário desligar o toggle, saímos do loop imediatamente
-            if not run:
-                break
-
-        # Limpeza final ao sair do loop
-        cap.release()
-        cv2.destroyAllWindows()
+    mp_hands = mp.solutions.hands
+    hands = mp_hands.Hands(max_num_hands=1, min_detection_confidence=0.7)
+    cap = cv2.VideoCapture(0)
     
-    # Força o Streamlit a parar a execução desta parte do script
-    st.rerun() 
+    # Buffer para a LSTM (precisa de 15 frames)
+    buffer_pts = deque(maxlen=15)
+    ultima_letra = ""
+    tempo_confirmacao = time.time()
 
+    while run:
+        ret, frame = cap.read()
+        if not ret: break
+
+        frame = cv2.flip(frame, 1)
+        h, w, _ = frame.shape
+        
+        # Define a ROI (Região de Interesse) para a CNN
+        roi_x, roi_y, roi_w, roi_h = w//2, 100, 250, 250
+        cv2.rectangle(frame, (roi_x, roi_y), (roi_x + roi_w, roi_y + roi_h), (0, 255, 0), 2)
+
+        # Processamento MediaPipe
+        img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = hands.process(img_rgb)
+
+        if results.multi_hand_landmarks:
+            lms = results.multi_hand_landmarks[0]
+            mp.solutions.drawing_utils.draw_landmarks(frame, lms, mp_hands.HAND_CONNECTIONS)
+
+            # 1. Coleta pontos para a LSTM
+            pts_brutos = []
+            for lm in lms.landmark:
+                pts_brutos.extend([lm.x, lm.y, lm.z])
+            buffer_pts.append(normalizar_pontos(pts_brutos))
+
+            # 2. Coleta imagem para a CNN
+            roi = frame[roi_y:roi_y+roi_h, roi_x:roi_x+roi_w]
+            if roi.size > 0:
+                roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+                roi_resize = cv2.resize(roi_gray, (64, 64))
+                
+                # Prepara tensores
+                img_tensor = torch.tensor(roi_resize, dtype=torch.float32).unsqueeze(0).unsqueeze(0) / 255.0
+                
+                # Só prediz se o buffer da LSTM estiver cheio (15 frames)
+                if len(buffer_pts) == 15:
+                    pts_np = np.array([list(buffer_pts)], dtype=np.float32)
+                    pts_tensor = torch.from_numpy(pts_np)
+                    
+                    with torch.no_grad():
+                        output = modelo(img_tensor, pts_tensor)
+                        prob = F.softmax(output, dim=1)
+                        conf, pred = torch.max(prob, 1)
+                        letra_detectada = classes[pred.item()]
+
+                        # Lógica de exibição e estabilização
+                        if conf.item() > 0.7:
+                            cv2.putText(frame, f"{letra_detectada} ({conf.item():.0%})", 
+                                        (roi_x, roi_y - 10), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
+
+                            if letra_detectada == ultima_letra:
+                                if time.time() - tempo_confirmacao > 1.2:
+                                    st.session_state.frase += letra_detectada
+                                    tempo_confirmacao = time.time() # Reset do timer
+                                    buffer_pts.clear() # Limpa para a próxima letra
+                            else:
+                                ultima_letra = letra_detectada
+                                tempo_confirmacao = time.time()
+
+        # Atualiza Interface
+        area_frase.info(f"### {st.session_state.frase}")
+        FRAME_WINDOW.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        
+    cap.release()
 else:
-    FRAME_WINDOW.info("Câmera desligada. Ative o interruptor para começar.")
-    # Garante que o áudio e processos paralelos parem
-    pygame.mixer.quit() if pygame.mixer.get_init() else None
+    st.info("Câmera desligada. Clique no botão acima para iniciar.")

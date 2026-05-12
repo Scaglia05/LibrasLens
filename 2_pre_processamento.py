@@ -1,112 +1,87 @@
 import pandas as pd
 import numpy as np
-import glob
-import sys
 import os
+import cv2
 from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import train_test_split
 
-# --- CONFIGURAÇÕES ---
-SEQ_LENGTH = 15  # Janela de 15 frames (aprox. 0.5s a 30fps)
-ARQUIVO_ENTRADA = "banco_dados_libras.csv"
+# --- CONFIGURAÇÕES (Devem ser iguais ao Coletor) ---
+ARQUIVO_CSV = 'banco_dados_libras.csv'
+DIR_IMAGENS = 'dataset_imagens/Train'
+IMG_SIZE = 64
+SEQUENCIA_TAMANHO = 15 # Quantos frames a LSTM vai olhar por vez
 
-def normalizar_coordenadas_avancado(X):
-    """
-    1. Translação: Move o pulso para a origem (0,0,0).
-    2. Escala: Redimensiona a mão para um tamanho padrão baseado na palma.
-    """
-    X_norm = np.copy(X)
+def preparar_dados_hibridos():
+    print("Step 1: Carregando CSV e tratando colunas...")
+    # Carregamos o CSV. Se não tiver cabeçalho, nós definimos aqui
+    try:
+        df = pd.read_csv(ARQUIVO_CSV)
+        # Se a primeira coluna não se chamar 'label', vamos renomear
+        if 'label' not in df.columns:
+            # Assume que a primeira coluna é a letra e o resto são coordenadas
+            colunas = ['label'] + [f'coord_{i}' for i in range(df.shape[1] - 1)]
+            df = pd.read_csv(ARQUIVO_CSV, names=colunas)
+    except Exception as e:
+        print(f"Erro ao ler CSV: {e}")
+        return
+
+    # --- 1. TRATAMENTO DAS LABELS ---
+    le = LabelEncoder()
+    y_encoded = le.fit_transform(df['label'])
+    np.save('classes.npy', le.classes_)
+    num_classes = len(le.classes_)
+    print(f"✅ Classes detectadas: {le.classes_}")
+
+    # --- 2. PREPARAÇÃO DOS PONTOS (LSTM) ---
+    print("Step 2: Preparando sequências para LSTM...")
+    X_pts = df.drop('label', axis=1).values
     
-    for linha in range(X_norm.shape[0]):
-        # Ponto 0: Pulso (x, y, z)
-        pulso = X_norm[linha, 0:3]
-        
-        # Ponto 9: Base do dedo médio (usado para calcular a escala da palma)
-        ponto_referencia = X_norm[linha, 27:30] 
-        
-        # Cálculo da distância (Norma Euclidiana) para normalização de escala
-        distancia_palma = np.linalg.norm(ponto_referencia - pulso)
-        
-        # Evita divisão por zero caso o MediaPipe falhe
-        if distancia_palma == 0:
-            distancia_palma = 1.0
-
-        for i in range(0, 63, 3):
-            # Subtrai o pulso (Translação) e divide pela escala
-            X_norm[linha, i : i+3] = (X_norm[linha, i : i+3] - pulso) / distancia_palma
-            
-    return X_norm
-
-def criar_sequencias(X, y):
+    # Criamos sequências de 15 frames
     X_seq, y_seq = [], []
-    for i in range(len(X) - SEQ_LENGTH):
-        # Verifica se todos os frames na janela pertencem à mesma classe
-        if len(set(y[i : i + SEQ_LENGTH])) == 1: 
-            X_seq.append(X[i : i + SEQ_LENGTH])
-            y_seq.append(y[i + SEQ_LENGTH - 1])
-    return np.array(X_seq), np.array(y_seq)
-
-def preparar_dados():
-    print("="*60)
-    print("🛠️  INICIANDO PRÉ-PROCESSAMENTO (PADRÃO LSTM 2026)")
-    print("="*60)
-
-    if not os.path.exists(ARQUIVO_ENTRADA):
-        print(f"❌ [ERRO] {ARQUIVO_ENTRADA} não encontrado!")
-        sys.exit()
-
-    df = pd.read_csv(ARQUIVO_ENTRADA)
+    for i in range(SEQUENCIA_TAMANHO, len(X_pts)):
+        # Só cria sequência se todos os 15 frames forem da mesma letra
+        if len(set(df['label'].iloc[i-SEQUENCIA_TAMANHO:i])) == 1:
+            X_seq.append(X_pts[i-SEQUENCIA_TAMANHO:i])
+            y_seq.append(y_encoded[i-1])
     
-    # Separação de Features e Labels
-    X_bruto = df.drop('label', axis=1).values.astype(np.float32)
-    y_texto = df['label'].values
+    X_seq = np.array(X_seq)
+    y_seq = np.array(y_seq)
+
+    # --- 3. PREPARAÇÃO DAS IMAGENS (CNN) ---
+    print("Step 3: Carregando e processando imagens...")
+    X_img = []
+    # Usamos o caminho das imagens baseado no CSV para manter sincronia
+    # Para simplificar, vamos carregar as imagens que batem com as sequências
+    for i in range(SEQUENCIA_TAMANHO, len(df)):
+        if len(set(df['label'].iloc[i-SEQUENCIA_TAMANHO:i])) == 1:
+            letra = df['label'].iloc[i-1]
+            pasta = os.path.join(DIR_IMAGENS, letra)
+            
+            # Pega a última imagem salva na pasta daquela letra (ou correspondente)
+            lista_fotos = sorted(os.listdir(pasta))
+            # Tenta pegar uma foto proporcional ao índice atual
+            idx_foto = min(i, len(lista_fotos)-1)
+            img_path = os.path.join(pasta, lista_fotos[idx_foto])
+            
+            img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+            if img is not None:
+                img = cv2.resize(img, (IMG_SIZE, IMG_SIZE))
+                X_img.append(img)
+            else:
+                # Se falhar, cria uma imagem preta para não quebrar o array
+                X_img.append(np.zeros((IMG_SIZE, IMG_SIZE)))
+
+    X_img = np.array(X_img)
+    X_img = X_img.reshape(-1, 1, IMG_SIZE, IMG_SIZE) / 255.0 # Normaliza para CNN
+
+    print(f"✅ Dados processados: Pontos {X_seq.shape} | Imagens {X_img.shape}")
+
+    # --- 4. SALVAMENTO ---
+    np.save('X_hibrido_pts.npy', X_seq)
+    np.save('X_hibrido_img.npy', X_img)
+    np.save('y_hibrido_labels.npy', y_seq)
     
-    print(f"-> Frames brutos: {len(X_bruto)}")
-
-    # 1. Normalização (Translação + Escala)
-    print("-> Aplicando Invariância de Translação e Escala...")
-    X_norm = normalizar_coordenadas_avancado(X_bruto)
-
-    # 2. Encoding das Labels
-    encoder = LabelEncoder()
-    y_numerico = encoder.fit_transform(y_texto)
-    print(f"-> Classes ({len(encoder.classes_)}): {list(encoder.classes_)}")
-
-    # 3. Criação de Janelas Temporais para LSTM
-    print(f"-> Gerando sequências de {SEQ_LENGTH} frames...")
-    X_seq, y_seq = criar_sequencias(X_norm, y_numerico)
-    
-    if len(X_seq) == 0:
-        print("❌ [ERRO] Dados insuficientes para criar sequências!")
-        sys.exit()
-
-    # 4. Divisão do Dataset (80% Treino/Val, 20% Teste Final)
-    # Usamos stratify para manter o equilíbrio entre as letras
-    X_temp, X_test, y_temp, y_test = train_test_split(
-        X_seq, y_seq, test_size=0.20, stratify=y_seq, random_state=42
-    )
-    
-    # Divide os 80% em Treino (64% total) e Validação (16% total)
-    X_train, X_val, y_train, y_val = train_test_split(
-        X_temp, y_temp, test_size=0.20, stratify=y_temp, random_state=42
-    )
-
-    # 5. Salvamento dos arquivos binários
-    print("-> Salvando arquivos .npy para o treinamento...")
-    formatos = {
-        'X_train.npy': X_train, 'y_train.npy': y_train,
-        'X_val.npy': X_val,   'y_val.npy': y_val,
-        'X_test.npy': X_test,  'y_test.npy': y_test,
-        'classes_encoder.npy': encoder.classes_
-    }
-    
-    for nome, dado in formatos.items():
-        np.save(nome, dado)
-
-    print("="*60)
-    print(f"✅ SUCESSO! Dataset pronto para a LSTM.")
-    print(f"📦 Treino: {X_train.shape} | Val: {X_val.shape} | Teste: {X_test.shape}")
-    print("="*60)
+    print("✨ TUDO PRONTO! Pode rodar o 3_treinamento.py")
 
 if __name__ == "__main__":
-    preparar_dados()
+    preparar_dados_hibridos()

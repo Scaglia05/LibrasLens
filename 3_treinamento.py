@@ -1,136 +1,118 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, Dataset
 import numpy as np
-import os
-import sys
-from sklearn.metrics import accuracy_score, f1_score
+from sklearn.model_selection import train_test_split
 
-# --- HIPERPARÂMETROS ---
-BATCH_SIZE = 32
-LEARNING_RATE = 0.001
-EPOCAS = 150  
-HIDDEN_SIZE = 128
-NUM_LAYERS = 2
-PATIENCE = 15  # Early Stopping: para se não melhorar em 15 épocas
+# --- 1. CONFIGURAÇÕES ---
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+BATCH_SIZE = 16 # Reduzi para 16 para maior estabilidade
+EPOCAS = 100
+LEARNING_RATE = 0.001
 
-# --- ARQUITETURA DO MODELO ---
-class ModeloLibrasLSTM(nn.Module):
+# --- 2. ARQUITETURA HÍBRIDA ---
+class ModeloHibridoLibras(nn.Module):
     def __init__(self, num_classes):
-        super(ModeloLibrasLSTM, self).__init__()
-        self.lstm = nn.LSTM(input_size=63, hidden_size=HIDDEN_SIZE, 
-                            num_layers=NUM_LAYERS, batch_first=True, dropout=0.3)
-        
-        # Batch Normalization para estabilizar a saída da LSTM
-        self.bn = nn.BatchNorm1d(HIDDEN_SIZE)
-        
-        # Cabeça de classificação mais densa para padrões complexos
-        self.fc = nn.Sequential(
-            nn.Linear(HIDDEN_SIZE, 64),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(64, num_classes)
+        super(ModeloHibridoLibras, self).__init__()
+        # Ramo CNN
+        self.cnn = nn.Sequential(
+            nn.Conv2d(1, 32, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2),
+            nn.Conv2d(32, 64, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2),
+            nn.Flatten(),
+            nn.Linear(64 * 16 * 16, 256), nn.ReLU(), nn.Dropout(0.3)
+        )
+        # Ramo LSTM
+        self.lstm = nn.LSTM(63, 256, num_layers=2, batch_first=True, bidirectional=True)
+        self.bn_lstm = nn.BatchNorm1d(512)
+        # Classificador
+        self.classifier = nn.Sequential(
+            nn.Linear(256 + 512, 128), nn.ReLU(),
+            nn.Linear(128, num_classes)
         )
 
-    def forward(self, x):
-        # Pegamos apenas a saída do último passo temporal (last hidden state)
-        out, _ = self.lstm(x)
-        out = out[:, -1, :] 
-        out = self.bn(out)
-        return self.fc(out)
+    def forward(self, img, pts):
+        x_img = self.cnn(img)
+        out_lstm, _ = self.lstm(pts)
+        x_pts = out_lstm[:, -1, :]
+        x_pts = self.bn_lstm(x_pts)
+        return self.classifier(torch.cat((x_img, x_pts), dim=1))
 
-def avaliar_modelo(modelo, loader, criterio):
-    modelo.eval()
-    perda_total = 0
-    y_true, y_pred = [], []
-    with torch.no_grad():
-        for X_batch, y_batch in loader:
-            X_batch, y_batch = X_batch.to(DEVICE), y_batch.to(DEVICE)
-            saidas = modelo(X_batch)
-            perda = criterio(saidas, y_batch)
-            perda_total += perda.item()
-            _, previstos = torch.max(saidas, 1)
-            y_true.extend(y_batch.cpu().numpy())
-            y_pred.extend(previstos.cpu().numpy())
+# --- 3. DATASET COM CORREÇÃO DE TAMANHO ---
+class LibrasDataset(Dataset):
+    def __init__(self, imgs, pts, labels):
+        # Correção da dimensão da imagem
+        temp_imgs = torch.tensor(imgs, dtype=torch.float32)
+        if temp_imgs.ndimension() == 5:
+            temp_imgs = temp_imgs.squeeze(2)
+        
+        self.imgs = temp_imgs / 255.0
+        self.labels = torch.tensor(labels, dtype=torch.long)
+        
+        # Lógica de alinhamento dos pontos (LSTM)
+        total_coordenadas = pts.flatten().shape[0]
+        tamanho_sequencia = 15 * 63 
+        num_sequencias_possiveis = total_coordenadas // tamanho_sequencia
+        
+        pts_formatados = torch.tensor(pts.flatten()[:num_sequencias_possiveis * tamanho_sequencia], dtype=torch.float32)
+        self.pts = pts_formatados.view(-1, 15, 63)
+        
+        # Sincronização final
+        self.val_len = min(len(self.imgs), len(self.pts), len(self.labels))
+        print(f"📏 Dataset alinhado: {self.val_len} amostras prontas para o treino.")
+
+    def __len__(self): 
+        return self.val_len
+        
+    def __getitem__(self, idx): 
+        return self.imgs[idx], self.pts[idx], self.labels[idx]
+
+# --- 4. FUNÇÃO DE TREINO ---
+def treinar():
+    print("📂 Carregando e Alinhando arquivos...")
+    X_img = np.load('X_hibrido_img.npy')
+    X_pts = np.load('X_hibrido_pts.npy')
+    y = np.load('y_hibrido_labels.npy')
+    classes = np.load('classes.npy', allow_pickle=True)
+
+    # CORREÇÃO CRÍTICA: Alinha todos os arrays pelo menor tamanho encontrado
+    min_samples = min(len(X_img), len(X_pts), len(y))
+    X_img = X_img[:min_samples]
+    X_pts = X_pts[:min_samples]
+    y = y[:min_samples]
     
-    return (
-        perda_total / len(loader),
-        accuracy_score(y_true, y_pred),
-        f1_score(y_true, y_pred, average='weighted', zero_division=0)
+    print(f"✅ Dados alinhados: {min_samples} amostras encontradas.")
+
+    img_train, img_val, pts_train, pts_val, y_train, y_val = train_test_split(
+        X_img, X_pts, y, test_size=0.2, stratify=y, random_state=42
     )
 
-def treinar():
-    # --- CARREGAMENTO DE DADOS ---
-    try:
-        X_train = torch.tensor(np.load('X_train.npy'), dtype=torch.float32)
-        y_train = torch.tensor(np.load('y_train.npy'), dtype=torch.long)
-        X_val = torch.tensor(np.load('X_val.npy'), dtype=torch.float32)
-        y_val = torch.tensor(np.load('y_val.npy'), dtype=torch.long)
-        X_test = torch.tensor(np.load('X_test.npy'), dtype=torch.float32)
-        y_test = torch.tensor(np.load('y_test.npy'), dtype=torch.long)
-    except FileNotFoundError:
-        print("❌ Arquivos .npy não encontrados. Rode o script de pré-processamento!")
-        return
+    train_loader = DataLoader(LibrasDataset(img_train, pts_train, y_train), batch_size=BATCH_SIZE, shuffle=True)
+    val_loader = DataLoader(LibrasDataset(img_val, pts_val, y_val), batch_size=BATCH_SIZE)
 
-    train_loader = DataLoader(TensorDataset(X_train, y_train), batch_size=BATCH_SIZE, shuffle=True)
-    val_loader = DataLoader(TensorDataset(X_val, y_val), batch_size=BATCH_SIZE)
-    test_loader = DataLoader(TensorDataset(X_test, y_test), batch_size=BATCH_SIZE)
-
-    num_classes = len(np.unique(y_train.numpy()))
-    modelo = ModeloLibrasLSTM(num_classes).to(DEVICE)
+    modelo = ModeloHibridoLibras(len(classes)).to(DEVICE)
     criterio = nn.CrossEntropyLoss()
-    otimizador = optim.Adam(modelo.parameters(), lr=LEARNING_RATE, weight_decay=1e-5)
-    
-    # Scheduler: Reduz LR se a perda de validação parar de cair
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(otimizador, 'min', patience=5, factor=0.5)
+    otimizador = optim.Adam(modelo.parameters(), lr=LEARNING_RATE)
 
-    melhor_perda_val = float('inf')
-    contador_patience = 0
-
-    print(f"\n🚀 Iniciando Treino em: {DEVICE} | Classes: {num_classes}")
-    print("-" * 50)
-
-    for epoca in range(EPOCAS):
+    print(f"🚀 Treinando em {DEVICE}...")
+    for epoca in range(1, EPOCAS + 1):
         modelo.train()
-        erro_treino = 0
-        
-        for X_batch, y_batch in train_loader:
-            X_batch, y_batch = X_batch.to(DEVICE), y_batch.to(DEVICE)
+        loss_total = 0
+        for imgs, pts, labels in train_loader:
+            imgs, pts, labels = imgs.to(DEVICE), pts.to(DEVICE), labels.to(DEVICE)
             
             otimizador.zero_grad()
-            saida = modelo(X_batch)
-            erro = criterio(saida, y_batch)
-            erro.backward()
+            saida = modelo(imgs, pts)
+            loss = criterio(saida, labels)
+            loss.backward()
             otimizador.step()
-            erro_treino += erro.item()
+            loss_total += loss.item()
+        
+        if epoca % 10 == 0 or epoca == 1:
+            print(f"Época {epoca}/{EPOCAS} | Perda: {loss_total/len(train_loader):.4f}")
 
-        # Validação
-        perda_val, acc_val, f1_val = avaliar_modelo(modelo, val_loader, criterio)
-        scheduler.step(perda_val)
-
-        if (epoca + 1) % 5 == 0 or epoca == 0:
-            print(f"Época [{epoca+1:03d}] | Erro Tr: {erro_treino/len(train_loader):.4f} | Acc Val: {acc_val:.4f} | LR: {otimizador.param_groups[0]['lr']:.6f}")
-
-        # Lógica de Early Stopping e Checkpoint
-        if perda_val < melhor_perda_val:
-            melhor_perda_val = perda_val
-            torch.save(modelo.state_dict(), 'modelo_libras_lstm.pth')
-            contador_patience = 0
-        else:
-            contador_patience += 1
-            if contador_patience >= PATIENCE:
-                print(f"\n🛑 Early Stopping ativado na época {epoca+1}!")
-                break
-
-    # --- TESTE FINAL ---
-    print("\n" + "="*40)
-    print("🎯 TESTE FINAL COM O MELHOR MODELO")
-    modelo.load_state_dict(torch.load('modelo_libras_lstm.pth'))
-    _, t_acc, t_f1 = avaliar_modelo(modelo, test_loader, criterio)
-    print(f"Acurácia: {t_acc:.4f} | F1-Score: {t_f1:.4f}")
-    print("="*40)
+    torch.save(modelo.state_dict(), 'modelo_hibrido_final.pth')
+    print("✨ Modelo salvo: modelo_hibrido_final.pth")
 
 if __name__ == "__main__":
     treinar()
