@@ -24,25 +24,20 @@ except ImportError:
 @st.cache_resource
 def carregar_recursos():
     import tensorflow as tf
-    # Certifique-se que o caminho do modelo está correto
-    modelo = tf.keras.models.load_model('models/modelo_libras_cnn_13_05_2026_01_19.h5') 
+    # ATENÇÃO: Atualize para o nome do seu novo arquivo .h5 de pontos!
+    modelo = tf.keras.models.load_model('models/modelo_libras_pontos_16_05_2026_17_32.h5') 
     classes = np.load('classes.npy', allow_pickle=True)
     return modelo, classes
 
 @st.cache_resource
 def configurar_mediapipe():
-    try:
-        import mediapipe.python.solutions.hands as mp_hands
-        import mediapipe.python.solutions.drawing_utils as mp_drawing
-    except ImportError:
-        from mediapipe.solutions import hands as mp_hands
-        from mediapipe.solutions import drawing_utils as mp_drawing
-    
+    import mediapipe as mp
+    mp_hands = mp.solutions.hands
+    mp_drawing = mp.solutions.drawing_utils
     hands = mp_hands.Hands(min_detection_confidence=0.7, min_tracking_confidence=0.5)
     return mp_hands, hands, mp_drawing
 
 def falar_frase(texto):
-    """Gera áudio e retorna a tag HTML para reprodução automática"""
     if texto.strip():
         try:
             tts = gTTS(text=texto, lang='pt-br')
@@ -50,19 +45,14 @@ def falar_frase(texto):
             with open("frase.mp3", "rb") as f:
                 data = f.read()
                 b64 = base64.b64encode(data).decode()
-                md = f"""
-                    <audio autoplay="true">
-                    <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
-                    </audio>
-                    """
+                md = f"""<audio autoplay="true"><source src="data:audio/mp3;base64,{b64}" type="audio/mp3"></audio>"""
                 return md
-        except Exception as e:
-            return f""
+        except: return ""
     return ""
 
 # --- 2. INTERFACE STREAMLIT ---
 st.set_page_config(page_title="Libras Vision 2026", layout="wide")
-st.title("🤟 Tradutor Inteligente com Voz")
+st.title("🤟 Tradutor Geométrico Inteligente")
 
 if 'frase' not in st.session_state:
     st.session_state.frase = ""
@@ -97,10 +87,6 @@ if run:
 
         frame = cv2.flip(frame, 1)
         h, w, _ = frame.shape
-        # ROI centralizada
-        x1, y1, x2, y2 = w//2 - 125, h//2 - 125, w//2 + 125, h//2 + 125
-        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-
         img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = hands.process(img_rgb)
 
@@ -108,49 +94,52 @@ if run:
             tempo_ultima_mao = time.time() 
             ja_leu = False
             
-            mp_drawing.draw_landmarks(frame, results.multi_hand_landmarks[0], mp_hands.HAND_CONNECTIONS)
-            roi = frame[y1:y2, x1:x2]
+            hand_lms = results.multi_hand_landmarks[0]
+            mp_drawing.draw_landmarks(frame, hand_lms, mp_hands.HAND_CONNECTIONS)
             
-            if roi.size > 0:
-                roi_rgb = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
-                roi_resize = cv2.resize(roi_rgb, (64, 64)) / 255.0
-                img_tensor = np.expand_dims(roi_resize, axis=0)
+            # --- LÓGICA DE EXTRAÇÃO E PREDIÇÃO (IGUAL AO TREINO) ---
+            lista_pontos = []
+            for lm in hand_lms.landmark:
+                lista_pontos.extend([lm.x, lm.y, lm.z])
+            
+            # Centralização no pulso (Ponto 0)
+            pontos_array = np.array(lista_pontos).reshape(21, 3)
+            pulso = pontos_array[0]
+            pontos_centralizados = pontos_array - pulso
+            input_ia = pontos_centralizados.flatten().reshape(1, 63)
 
-                preds = modelo.predict(img_tensor, verbose=0)
-                idx = np.argmax(preds)
-                letra = classes[idx]
+            preds = modelo.predict(input_ia, verbose=0)
+            idx = np.argmax(preds)
+            confianca = preds[0][idx]
+            letra = classes[idx]
 
-                if preds[0][idx] > 0.95:
-                    cv2.putText(frame, f"SINAL: {letra}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
+            if confianca > 0.98: # Exigimos confiança alta pela precisão do modelo
+                cv2.putText(frame, f"LETRA: {letra} ({confianca:.2%})", (50, h-50), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 3)
 
-                    if letra == ultima_letra:
-                        timer_confirmacao += 1
-                        # Barra de progresso visual
-                        cv2.rectangle(frame, (x1, y2+10), (x1 + (timer_confirmacao*16), y2+20), (0, 255, 255), -1)
+                if letra == ultima_letra:
+                    timer_confirmacao += 1
+                    if timer_confirmacao >= 15:
+                        if letra == "ESPACO": st.session_state.frase += " "
+                        elif letra == "APAGAR": st.session_state.frase = st.session_state.frase[:-1]
+                        else: st.session_state.frase += letra
                         
-                        if timer_confirmacao >= 15:
-                            if letra == "ESPACO": st.session_state.frase += " "
-                            elif letra == "APAGAR": st.session_state.frase = st.session_state.frase[:-1]
-                            else: st.session_state.frase += letra
-                            timer_confirmacao = 0 
-                            ultima_letra = "" # Evita repetir a mesma letra sem tirar a mão
-                    else:
-                        ultima_letra = letra
-                        timer_confirmacao = 0
+                        timer_confirmacao = 0 
+                        ultima_letra = "" # Reset para a próxima letra
+                else:
+                    ultima_letra = letra
+                    timer_confirmacao = 0
         else:
-            # LÓGICA DE LEITURA (10 segundos sem mão)
             tempo_ocioso = time.time() - tempo_ultima_mao
-            if tempo_ocioso > 10 and not ja_leu and st.session_state.frase:
+            if tempo_ocioso > 7 and not ja_leu and st.session_state.frase:
                 html_audio = falar_frase(st.session_state.frase)
                 placeholder_audio.markdown(html_audio, unsafe_allow_html=True)
                 ja_leu = True
             
-            # Contador regressivo visual
             if not ja_leu and st.session_state.frase:
-                cv2.putText(frame, f"Lendo em: {int(10 - tempo_ocioso)}s", (50, 50), 
+                cv2.putText(frame, f"Lendo em: {int(7 - tempo_ocioso)}s", (50, 50), 
                             cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
 
-        # Atualização da UI (dentro do While, mas fora do if hand)
         area_frase.info(f"### {st.session_state.frase}")
         FRAME_WINDOW.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
         
