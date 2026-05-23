@@ -1,0 +1,40 @@
+# Ambientes Virtuais
+venv/
+.venv/
+env/
+# As linhas abaixo com "/" no início garantem que pastas 
+# na raiz do projeto com esses nomes também sejam ignoradas
+/env/
+/venv/
+
+# Cache do Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Arquivos de Sistema e IDE
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Arquivos temporários de áudio (gTTS)
+# Isso evita que o Git fique "sujo" com arquivos de fala gerados nos testes
+fala_temp*.mp3
+temp.mp3
+
+# Modelos e Dados
+# Mantendo os arquivos de dados e modelos liberados conforme sua decisão.
+# Se os arquivos .pth (modelos) ficarem muito grandes, o Git pode reclamar.
+# !*.npy
+# !*.csv
+# !*.pth
+
+# Logs
+*.log
+
+# Bloqueando arquivos de dados pesados da IA
+*.npy
+*.pth
+*.h5
