@@ -129,5 +129,3 @@ O modelo LibrasLens demonstrou resultados superiores quando comparado com arquit
 ---
 
 **Projeto de Inteligência Artificial II — FHO 2026**
-
-```
