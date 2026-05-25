@@ -31,7 +31,7 @@ O desenvolvimento deste projeto foi rigorosamente documentado num artigo cientí
 
 | Arquivo | Formato | Link de Acesso |
 | :--- | :---: | :--- |
-| **Artigo Científico - LibrasLens** | `PDF` | [📥 Clique aqui para baixar/visualizar](./Reconhecimento_de_LIBRAS_em_Tempo_Real_via_MLP.pdf) |
+| **Artigo Científico - LibrasLens** | `PDF` | [📥 Clique aqui para baixar/visualizar](./Artigos/Reconhecimento_de_LIBRAS_em_Tempo_Real_via_MLP.pdf) |
 
 ---
 
