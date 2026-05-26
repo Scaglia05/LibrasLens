@@ -23,8 +23,6 @@ O LibrasLens opera através de um pipeline modular de quatro estágios:
 3.  **Classificação Neural:** Uma rede MLP processa a geometria 3D. A arquitetura inclui camadas densas (128, 64, 32), *BatchNormalization* para estabilidade e *Dropout* para evitar overfitting.
 4.  **Acessibilidade (TTS):** A predição é exibida numa interface web e convertida em áudio via `gTTS` (Google Text-to-Speech).
 
-
-
 ---
 
 ## 📄 Documentação Científica
@@ -33,7 +31,15 @@ O desenvolvimento deste projeto foi rigorosamente documentado num artigo cientí
 
 | Arquivo | Formato | Link de Acesso |
 | :--- | :---: | :--- |
-| **Artigo Científico - LibrasLens** | `PDF` | [📥 Clique aqui para baixar/visualizar](./Reconhecimento_de_LIBRAS_em_Tempo_Real_via_MLP.pdf) |
+| **Artigo Científico - LibrasLens** | `PDF` | [📥 Clique aqui para baixar/visualizar](./Artigos/Reconhecimento_de_LIBRAS_em_Tempo_Real_via_MLP.pdf) |
+
+---
+
+## 📦 Download do Projeto Completo
+
+Para facilitar os testes, avaliação e a replicação dos resultados, disponibilizamos o repositório completo em formato compactado (`.zip`). O arquivo contém todos os códigos-fonte, o banco de dados autoral extraído (`dataset.csv`), os modelos neurais pré-treinados (`.h5`) e a estrutura de pastas configurada.
+
+🔗 **[Clique aqui para baixar o projeto completo (Google Drive)](https://drive.google.com/file/d/1BEnWo_EjBWr_MwHuhXDqhUMb7cmvtFQx/view?usp=sharing)**
 
 ---
 
